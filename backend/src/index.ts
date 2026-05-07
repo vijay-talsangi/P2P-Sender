@@ -3,6 +3,7 @@ import { createBunWebSocket } from 'hono/bun';
 import { serveStatic } from 'hono/bun';
 import { cors } from 'hono/cors';
 import { registerConnection, handleMessage, handleClose, handleError } from './signaling';
+import * as crypto from 'crypto';
 
 const app = new Hono();
 const { upgradeWebSocket, websocket } = createBunWebSocket();
@@ -18,14 +19,19 @@ app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: Date.now() }));
 // ─── TURN Credentials ──────────────────────────────────────────────────
 
 app.get('/api/turn-credentials', (c) => {
+  const secret = process.env.TURN_SECRET!;
+  const ttl = 600; // 10 minutes
+  const username = String(Math.floor(Date.now() / 1000) + ttl);
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+
   return c.json({
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       {
         urls: process.env.TURN_URL,
-        username: process.env.TURN_USERNAME,
-        credential: process.env.TURN_PASSWORD
+        username,
+        credential
       }
     ]
   });
