@@ -250,8 +250,7 @@ PORT=3000                           # Server port (default: 3000)
 
 # TURN Server (Optional but recommended for NAT traversal)
 TURN_URL=turn:turnserver.example.com:3478
-TURN_USERNAME=your_username
-TURN_PASSWORD=your_password
+TURN_SECRET=your_secret
 ```
 
 ### Notes

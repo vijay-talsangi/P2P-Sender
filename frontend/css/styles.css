@@ -870,4 +870,13 @@ body {
   .features {
     gap: 0.35rem;
   }
+
+  .input-group {
+    flex-direction: column;
+  }
+
+  .input-group .input,
+  .input-group .btn {
+    width: 100%;
+  }
 }
