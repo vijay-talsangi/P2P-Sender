@@ -319,8 +319,7 @@ services:
     environment:
       PORT: 3000
       TURN_URL: ${TURN_URL}
-      TURN_USERNAME: ${TURN_USERNAME}
-      TURN_PASSWORD: ${TURN_PASSWORD}
+      TURN_SECRET: ${TURN_SECRET}
 ```
 
 ---
@@ -404,7 +403,7 @@ services:
 | Metric | Typical Value | Notes |
 |--------|---------------|-------|
 | **Connection Time** | 2-5 seconds | Depends on network, ICE gathering |
-| **Transfer Speed** | 50-500 MB/s | Direct P2P connection on LAN |
+| **Transfer Speed** | 5 MB/s | Direct P2P connection on LAN |
 | **Max File Size** | Limited by RAM | Typically 8GB+ on modern systems |
 | **Room Expiry** | 30 minutes | Auto-cleanup of inactive rooms |
 | **Chunk Size** | 16 KB | Optimized for reliability |
