@@ -403,10 +403,10 @@ services:
 | Metric | Typical Value | Notes |
 |--------|---------------|-------|
 | **Connection Time** | 2-5 seconds | Depends on network, ICE gathering |
-| **Transfer Speed** | 5 MB/s | Direct P2P connection on LAN |
-| **Max File Size** | Limited by RAM | Typically 8GB+ on modern systems |
+| **Transfer Speed** | 5-8 MB/s | Direct P2P connection |
+| **Max File Size** | Limited by RAM | If folder selected while recieving No Limit |
 | **Room Expiry** | 30 minutes | Auto-cleanup of inactive rooms |
-| **Chunk Size** | 16 KB | Optimized for reliability |
+| **Chunk Size** | 64 KB | Optimized for speed |
 
 ---
 

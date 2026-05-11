@@ -1,7 +1,7 @@
 /**
  * transfer.js — File chunking, backpressure management, and reassembly
  * Handles splitting files into 16KB chunks for sending via DataChannel,
- * and assembling received chunks into a downloadable Blob.
+ * and streaming received chunks directly to disk when possible.
  */
 
 class FileTransfer {
@@ -25,6 +25,11 @@ class FileTransfer {
     this.receivedBytes = 0;
     this.fileMeta = null;
     this.receiveStartTime = 0;
+    this.receiveDirectoryHandle = null;
+    this.receiveWritable = null;
+    this.receiveWriteChain = Promise.resolve();
+    this.receiveWriteError = null;
+    this.receiveWriterOpening = false;
 
     // ─── Progress Throttle ─────────────────────────────
     this._lastProgressUpdate = 0;
@@ -32,7 +37,7 @@ class FileTransfer {
     // ─── Callbacks ─────────────────────────────────────
     /** @type {(percent: number, speed: string, transferred: string, eta: string) => void} */
     this.onProgress = null;
-    /** @type {(blob: Blob, fileName: string, fileSize: number) => void} */
+    /** @type {(result: {blob: Blob|null, fileName: string, fileSize: number, savedToDisk: boolean}) => void} */
     this.onReceiveComplete = null;
     /** @type {() => void} */
     this.onSendComplete = null;
@@ -191,14 +196,32 @@ class FileTransfer {
     this.receivedChunks = [];
     this.receivedBytes = 0;
     this.receiveStartTime = performance.now();
+    this.receiveWriteChain = Promise.resolve();
+    this.receiveWriteError = null;
+
+    if (this.receiveDirectoryHandle) {
+      void this._openDiskWriter(meta);
+    }
 
     if (this.onFileMetaReceived) this.onFileMetaReceived(this.fileMeta);
   }
 
   /** Handle an incoming file chunk */
   _handleChunk(buffer) {
-    this.receivedChunks.push(buffer);
     this.receivedBytes += buffer.byteLength;
+
+    if (this.receiveWritable) {
+      const writable = this.receiveWritable;
+      this.receiveWriteChain = this.receiveWriteChain
+        .then(() => writable.write(buffer))
+        .catch((err) => {
+          this.receiveWriteError = err;
+          console.error('[Transfer] Write error:', err);
+          if (this.onError) this.onError(err.message);
+        });
+    } else {
+      this.receivedChunks.push(buffer);
+    }
 
     // Throttled progress update
     if (this.fileMeta) {
@@ -207,26 +230,106 @@ class FileTransfer {
   }
 
   /** Handle file-complete signal — assemble Blob */
-  _handleFileComplete() {
+  async _handleFileComplete() {
     if (!this.fileMeta) return;
 
-    console.log('[Transfer] File complete, assembling blob...');
+    console.log('[Transfer] File complete, finalizing receive...');
 
-    const blob = new Blob(this.receivedChunks, { type: this.fileMeta.mimeType });
+    try {
+      await this.receiveWriteChain;
 
-    // Final progress
-    if (this.onProgress) {
-      const elapsed = (performance.now() - this.receiveStartTime) / 1000;
-      const speed = this._formatSpeed(this.receivedBytes / elapsed);
-      this.onProgress(100, speed, this._formatBytes(this.receivedBytes), '0s');
+      if (this.receiveWriteError) {
+        throw this.receiveWriteError;
+      }
+
+      let blob = null;
+      let savedToDisk = false;
+
+      if (this.receiveWritable) {
+        await this.receiveWritable.close();
+        savedToDisk = true;
+      } else {
+        blob = new Blob(this.receivedChunks, { type: this.fileMeta.mimeType });
+      }
+
+      // Final progress
+      if (this.onProgress) {
+        const elapsed = (performance.now() - this.receiveStartTime) / 1000;
+        const speed = this._formatSpeed(this.receivedBytes / elapsed);
+        this.onProgress(100, speed, this._formatBytes(this.receivedBytes), '0s');
+      }
+
+      if (this.onReceiveComplete) {
+        this.onReceiveComplete({
+          blob,
+          fileName: this.fileMeta.name,
+          fileSize: this.fileMeta.size,
+          savedToDisk,
+        });
+      }
+
+      // Clean up
+      this.receivedChunks = [];
+    } catch (err) {
+      console.error('[Transfer] Receive finalize error:', err);
+      if (this.onError) this.onError(err.message);
+      if (this.receiveWritable) {
+        try {
+          await this.receiveWritable.abort();
+        } catch {
+          // Ignore cleanup failures.
+        }
+      }
+    } finally {
+      this.receiveWritable = null;
+      this.receiveWriteChain = Promise.resolve();
+      this.receiveWriteError = null;
     }
+  }
 
-    if (this.onReceiveComplete) {
-      this.onReceiveComplete(blob, this.fileMeta.name, this.fileMeta.size);
+  /** Attach a directory chosen by the receiver for disk-backed saves */
+  setReceiveDirectoryHandle(directoryHandle) {
+    this.receiveDirectoryHandle = directoryHandle;
+
+    if (this.fileMeta && !this.receiveWritable && !this.receiveWriterOpening) {
+      void this._openDiskWriter(this.fileMeta);
     }
+  }
 
-    // Clean up
-    this.receivedChunks = [];
+  /** Open a writable file in the selected directory and flush any buffered chunks */
+  async _openDiskWriter(meta) {
+    if (!this.receiveDirectoryHandle || this.receiveWritable || this.receiveWriterOpening) return;
+
+    try {
+      this.receiveWriterOpening = true;
+      const fileHandle = await this.receiveDirectoryHandle.getFileHandle(meta.name, { create: true });
+      const writable = await fileHandle.createWritable();
+
+      this.receiveWritable = writable;
+
+      const bufferedChunks = this.receivedChunks;
+      this.receivedChunks = [];
+
+      if (bufferedChunks.length > 0) {
+        this.receiveWriteChain = this.receiveWriteChain
+          .then(async () => {
+            for (const chunk of bufferedChunks) {
+              await writable.write(chunk);
+            }
+          })
+          .catch((err) => {
+            this.receiveWriteError = err;
+            console.error('[Transfer] Write error:', err);
+            if (this.onError) this.onError(err.message);
+          });
+      }
+    } catch (err) {
+      console.warn('[Transfer] Could not open disk writer, falling back to memory:', err);
+      this.receiveWritable = null;
+      this.receiveWriteChain = Promise.resolve();
+    } finally {
+      this.receiveWriterOpening = false;
+    }
   }
 
   /** Update receive progress (throttled) */
@@ -300,6 +403,12 @@ class FileTransfer {
     this.sendOffset = 0;
     this.isSending = false;
     this.sendAborted = false;
+    if (this.receiveWritable) {
+      this.receiveWritable.abort().catch(() => {});
+    }
+    this.receiveWritable = null;
+    this.receiveWriteChain = Promise.resolve();
+    this.receiveWriteError = null;
     this.receivedChunks = [];
     this.receivedBytes = 0;
     this.fileMeta = null;

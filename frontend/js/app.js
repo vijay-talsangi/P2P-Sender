@@ -43,6 +43,8 @@
     btnRemoveFile: $('btn-remove-file'),
     btnSend: $('btn-send'),
     waitingForFile: $('waiting-for-file'),
+    btnChooseSaveFolder: $('btn-choose-save-folder'),
+    btnChooseSaveFolderTransfer: $('btn-choose-save-folder-transfer'),
 
     // Transfer
     transferIcon: $('transfer-icon'),
@@ -76,6 +78,8 @@
     isTransferring: false,
     receivedBlob: null,
     receivedFileName: null,
+    receivedSavedToDisk: false,
+    saveDirectoryHandle: null,
   };
 
   // ═══════════════════════════════════════════════════════
@@ -114,6 +118,20 @@
     dom.transferStatusText.textContent = text;
   }
 
+  function setSaveFolderButtonsVisible(visible) {
+    [dom.btnChooseSaveFolder, dom.btnChooseSaveFolderTransfer].forEach((button) => {
+      if (!button) return;
+      button.style.display = visible ? '' : 'none';
+    });
+  }
+
+  function setSaveFolderButtonsLabel(label) {
+    [dom.btnChooseSaveFolder, dom.btnChooseSaveFolderTransfer].forEach((button) => {
+      if (!button) return;
+      button.textContent = label;
+    });
+  }
+
   // ═══════════════════════════════════════════════════════
   // SIGNALING CALLBACKS
   // ═══════════════════════════════════════════════════════
@@ -126,6 +144,7 @@
     dom.roomCodeSection.style.display = '';
     dom.fileDropSection.style.display = 'none';
     dom.waitingForFile.style.display = 'none';
+    setSaveFolderButtonsVisible(false);
 
     setStatus('status-waiting', 'Waiting for peer…');
     showView('room');
@@ -138,6 +157,7 @@
     dom.roomCodeSection.style.display = 'none';
     dom.fileDropSection.style.display = 'none';
     dom.waitingForFile.style.display = 'none';
+    setSaveFolderButtonsVisible(false);
 
     setStatus('status-waiting', 'Connecting to peer…');
     showView('room');
@@ -160,10 +180,13 @@
 
     if (state.currentView === 'transfer' && state.isTransferring) {
       setTransferStatus('status-disconnected', 'Peer disconnected');
+      setSaveFolderButtonsVisible(false);
+      transfer.reset();
     } else if (state.currentView === 'room') {
       setStatus('status-disconnected', 'Peer disconnected');
       dom.fileDropSection.style.display = 'none';
       dom.waitingForFile.style.display = 'none';
+      setSaveFolderButtonsVisible(false);
 
       if (state.role === 'host') {
         dom.roomCodeSection.style.display = '';
@@ -217,10 +240,12 @@
       dom.roomCodeSection.style.display = 'none';
       dom.fileDropSection.style.display = '';
       dom.waitingForFile.style.display = 'none';
+      setSaveFolderButtonsVisible(false);
     } else {
       // Guest is the receiver — wait for file
       dom.waitingForFile.style.display = '';
       dom.fileDropSection.style.display = 'none';
+      setSaveFolderButtonsVisible(true);
     }
   };
 
@@ -231,6 +256,8 @@
   webrtc.onDataChannelClose = () => {
     if (state.isTransferring) {
       setTransferStatus('status-disconnected', 'Connection lost');
+      setSaveFolderButtonsVisible(false);
+      transfer.reset();
     }
   };
 
@@ -282,22 +309,26 @@
     dom.statEta.textContent = '—';
     dom.transferComplete.style.display = 'none';
     setTransferStatus('status-transferring', 'Receiving…');
+    setSaveFolderButtonsVisible(true);
 
     showView('transfer');
   };
 
-  transfer.onReceiveComplete = (blob, fileName, fileSize) => {
+  transfer.onReceiveComplete = ({ blob, fileName, fileSize, savedToDisk }) => {
     state.isTransferring = false;
     state.receivedBlob = blob;
     state.receivedFileName = fileName;
+    state.receivedSavedToDisk = savedToDisk;
 
     dom.transferIcon.textContent = '✅';
     dom.transferTitle.textContent = 'Received!';
     setTransferStatus('status-complete', 'Transfer complete');
     dom.progressLabel.textContent = 'Complete';
     dom.transferComplete.style.display = '';
-    dom.btnDownload.style.display = '';
-    dom.completeMessage.textContent = `${fileName} (${formatBytes(fileSize)}) received successfully!`;
+    dom.btnDownload.style.display = savedToDisk ? 'none' : '';
+    dom.completeMessage.textContent = savedToDisk
+      ? `${fileName} (${formatBytes(fileSize)}) saved directly to disk.`
+      : `${fileName} (${formatBytes(fileSize)}) received successfully!`;
   };
 
   // ═══════════════════════════════════════════════════════
@@ -398,6 +429,30 @@
     dom.fileInput.value = '';
   });
 
+  // ─── Choose Save Folder ──────────────────────────────
+  const chooseSaveFolder = async () => {
+    if (!window.showDirectoryPicker) {
+      showError('This browser does not support direct disk saves');
+      return;
+    }
+
+    try {
+      const directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      state.saveDirectoryHandle = directoryHandle;
+      transfer.setReceiveDirectoryHandle(directoryHandle);
+      setSaveFolderButtonsLabel(`Save Folder: ${directoryHandle.name}`);
+    } catch (err) {
+      if (err && err.name !== 'AbortError') {
+        showError('Could not choose a save folder');
+      }
+    }
+  };
+
+  dom.btnChooseSaveFolder.addEventListener('click', chooseSaveFolder);
+  if (dom.btnChooseSaveFolderTransfer) {
+    dom.btnChooseSaveFolderTransfer.addEventListener('click', chooseSaveFolder);
+  }
+
   // ─── Send File ────────────────────────────────────────
   dom.btnSend.addEventListener('click', () => {
     if (!state.selectedFile || !webrtc.dataChannel) return;
@@ -427,7 +482,7 @@
 
   // ─── Download ─────────────────────────────────────────
   dom.btnDownload.addEventListener('click', () => {
-    if (!state.receivedBlob || !state.receivedFileName) return;
+    if (state.receivedSavedToDisk || !state.receivedBlob || !state.receivedFileName) return;
 
     const url = URL.createObjectURL(state.receivedBlob);
     const a = document.createElement('a');
@@ -447,6 +502,7 @@
     state.isTransferring = false;
     state.receivedBlob = null;
     state.receivedFileName = null;
+    state.receivedSavedToDisk = false;
     transfer.reset();
 
     // Reset file input
@@ -455,6 +511,13 @@
     dom.fileDropZone.style.display = '';
     dom.btnSend.disabled = true;
 
+    if (state.role === 'guest') {
+      setSaveFolderButtonsVisible(true);
+      setSaveFolderButtonsLabel(state.saveDirectoryHandle
+        ? `Save Folder: ${state.saveDirectoryHandle.name}`
+        : 'Choose Save Folder');
+    }
+
     if (state.isConnected) {
       if (state.role === 'host') {
         dom.fileDropSection.style.display = '';
@@ -462,6 +525,7 @@
       } else {
         dom.fileDropSection.style.display = 'none';
         dom.waitingForFile.style.display = '';
+        setSaveFolderButtonsVisible(true);
       }
       setStatus('status-connected', 'Connected');
       showView('room');
